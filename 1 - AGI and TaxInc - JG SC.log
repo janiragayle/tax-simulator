@@ -32,10 +32,10 @@ Notes:
       name:  <unnamed>
        log:  C:\Users\jeg2247\Desktop\Tax Simulator\stata_run.log
   log type:  text
- opened on:  11 Nov 2025, 09:31:47
+ opened on:  13 Nov 2025, 16:48:39
 
 . display "===== RUN STARTED at " c(current_time) " ====="
-===== RUN STARTED at 09:31:47 =====
+===== RUN STARTED at 16:48:39 =====
 
 . 
 . * === Import your input CSV ===
@@ -44,7 +44,7 @@ C:\Users\jeg2247\Desktop\Tax Simulator
 
 . import delimited using "mock_clean_inputs.csv", varnames(1) clear
 (encoding automatically selected: ISO-8859-1)
-(24 vars, 1 obs)
+(29 vars, 1 obs)
 
 .         
 . * --- Normalize filing status (place right after import/use) ---
@@ -56,11 +56,11 @@ C:\Users\jeg2247\Desktop\Tax Simulator
 . 
 . * Map string -> numeric codes used elsewhere (adjust texts if yours differ)
 . replace filestat = 5 if lower(trim(filing_status))=="single"
-(1 real change made)
+(0 real changes made)
 
 . replace filestat = 2 if inlist(lower(trim(filing_status)),"mfj","married fili
 > ng jointly")
-(0 real changes made)
+(1 real change made)
 
 . replace filestat = 4 if inlist(lower(trim(filing_status)),"hoh","head of hous
 > ehold")
@@ -90,7 +90,7 @@ C:\Users\jeg2247\Desktop\Tax Simulator
 
    filestat |      Freq.     Percent        Cum.
 ------------+-----------------------------------
-     Single |          1      100.00      100.00
+        MFJ |          1      100.00      100.00
 ------------+-----------------------------------
       Total |          1      100.00
 
@@ -565,8 +565,8 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 .         foreach stat in single mfj hoh {
   2.         replace cpsp_stdeduc = `stat'[1, 1] if `stat'_file==1
   3.         }
-(1 real change made)
 (0 real changes made)
+(1 real change made)
 (0 real changes made)
 
 .          
@@ -818,7 +818,7 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 
 . 
 . replace tu_cpsp_qbi_deduc = round(tu_cpsp_qbi_deduc, 1)
-(1 real change made)
+(0 real changes made)
 
 . replace tu_cpsp_qbi_deduc = 0 if year<2018
 (0 real changes made)
@@ -862,7 +862,7 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 
 .            
 . display "===== RUN FINISHED at " c(current_time) " ====="
-===== RUN FINISHED at 09:31:48 =====
+===== RUN FINISHED at 16:48:40 =====
 
 . display "Rows in memory: " _N
 Rows in memory: 1
@@ -871,23 +871,23 @@ Rows in memory: 1
 
 Contains data
  Observations:             1                  
-    Variables:            59                  
+    Variables:            64                  
 -------------------------------------------------------------------------------
 Variable      Storage   Display    Value
     name         type    format    label      Variable label
 -------------------------------------------------------------------------------
 tax_year        int     %8.0g                 
-filing_status   str6    %9s                   
+filing_status   str22   %22s                  
 year            int     %8.0g                 
 page            byte    %8.0g                 
 sage            byte    %8.0g                 
 pwages          long    %12.0g                
-swages          byte    %8.0g                 
-dwages          byte    %8.0g                 
+swages          long    %12.0g                
+dwages          int     %8.0g                 
 tu_pwages       long    %12.0g                
 psemp           byte    %8.0g                 
 ssemp           byte    %8.0g                 
-tu_psemp        int     %8.0g                 
+tu_psemp        byte    %8.0g                 
 tu_intrec       byte    %8.0g                 
 tu_dividends    byte    %8.0g                 
 tu_alimony      byte    %8.0g                 
@@ -899,7 +899,12 @@ tu_ira          byte    %8.0g
 tu_disab_tot    byte    %8.0g                 
 tu_surv         byte    %8.0g                 
 tu_gssi         byte    %8.0g                 
-other_taxable~e byte    %8.0g                 
+dep_total       byte    %8.0g                 
+dep_u6          byte    %8.0g                 
+dep_u18         byte    %8.0g                 
+dep_u17         byte    %8.0g                 
+dep_u19         byte    %8.0g                 
+dep_u13         byte    %8.0g                 
 filestat        byte    %8.0g      fstat      
 single_file     byte    %8.0g                 
 mfj_file        byte    %8.0g                 
