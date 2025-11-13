@@ -1,0 +1,2 @@
+tax_year,filing_status,year,page,sage,pwages,swages,dwages,tu_pwages,psemp,ssemp,tu_psemp,tu_intrec,tu_dividends,tu_alimony,tu_rent,tu_pui,tu_capital_nosp,tu_retinc,tu_ira,tu_disab_tot,tu_surv,tu_gssi,other_taxable_income
+2025,single,2025,25,0,60000,0,0,60000,0,0,200,0,0,0,1950,0,0,0,0,0,0,0,0

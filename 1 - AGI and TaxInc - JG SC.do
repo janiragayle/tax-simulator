@@ -1,0 +1,522 @@
+* === Begin log ===
+capture log close
+log using "C:\Users\jeg2247\Desktop\Tax Simulator\stata_run.log", replace text
+display "===== RUN STARTED at " c(current_time) " ====="
+
+* === Import your input CSV ===
+cd "C:\Users\jeg2247\Desktop\Tax Simulator"
+import delimited using "mock_clean_inputs.csv", varnames(1) clear
+	
+* --- Normalize filing status (place right after import/use) ---
+capture confirm variable filestat
+if _rc gen byte filestat = .
+
+* Map string -> numeric codes used elsewhere (adjust texts if yours differ)
+replace filestat = 5 if lower(trim(filing_status))=="single"
+replace filestat = 2 if inlist(lower(trim(filing_status)),"mfj","married filing jointly")
+replace filestat = 4 if inlist(lower(trim(filing_status)),"hoh","head of household")
+
+* Optional labels (nice for tabbing/checking)
+capture label drop fstat
+label define fstat 5 "Single" 2 "MFJ" 4 "HOH"
+label values filestat fstat
+
+* If later code expects *_file flags, create them here too:
+capture drop single_file mfj_file hoh_file
+gen byte single_file = (filestat==5)
+gen byte mfj_file    = (filestat==2)
+gen byte hoh_file    = (filestat==4)
+
+* Quick sanity check (you can comment this out later)
+tab filestat
+
+
+* MFJ flag (1 = married filing jointly, 0 otherwise)
+capture confirm variable mfj_file
+if _rc != 0 gen byte mfj_file = 0
+replace mfj_file = 1 if inlist(filing_status, "mfj", "married filing jointly", "married filing joint")
+
+* Create CPS-style filestat codes used by your script:
+* 2 = MFJ, 4 = HOH, 5 = Single. (We never set 6 unless you need a "non-filer".)
+capture confirm variable filestat
+if _rc != 0 gen byte filestat = .
+
+* Married filing jointly
+replace filestat = 2 if !missing(filing_status) & inlist(filing_status, ///
+    "mfj","married filing jointly","married filing joint") 
+
+* Head of household
+replace filestat = 4 if inlist(filing_status, "hoh","head of household","head-of-household")
+
+* Single
+replace filestat = 5 if filing_status=="single"
+
+* Dependent filer 
+replace filestat = 6 if filing_status=="dep_filer"
+
+
+* Default any still-missing cases to Single (non-MFJ)
+replace filestat = 5 if missing(filestat)
+
+
+
+* ----------------------------------------------------------
+**# Matrices with deduction and exemption amounts
+* ----------------------------------------------------------
+* Get parameters
+
+* ---- PATH SETUP ----
+global parameters "C:\Users\jeg2247\Desktop\Tax Simulator"
+*global parameters "C:\Users\smc2246\Box\Sophie Collyer (smc2246) Personal Folder\Students\Janira\Tax Simulator"
+preserve 
+	clear
+	import excel "$parameters\federal_parameters.xlsx", sheet("Sheet1") firstrow
+	save "$parameters\federal_parameters.dta", replace 
+	global yr 2024 
+	* Keep parameters for year of inetrest
+	keep if year==$yr
+
+	* Create scalars of each parameter
+	foreach var of varlist maxfica oasitax *tax* fed* eic* maxinvst cc* {
+		scalar `var' = `var'
+	}
+restore
+
+* FICA parameters
+	mat fica = (maxfica, oasitax, ditax, hitax, fed136, fed137, fed138, ///
+	fed7, fed8, fed9, fed10, fed11)
+
+	* Social security
+	mat ss = (fed12, fed13, fed14, fed15)
+
+* Standard deduction
+	mat sdep = (fed40, fed41, fed42, fed46, fed47) 	// dependents
+	mat single = (fed43, fed48, fed49) 			// single
+	mat mfj = (fed44, fed50, fed51, fed52, fed53)	// married, joint
+	mat hoh = (fed45, fed54, fed55)				// head of household
+
+capture drop tu_cpsp_fica_se
+gen double __se_net = 0.9235 * max(tu_psemp, 0)
+gen double __se_ss  = oasitax * min(__se_net, maxfica)
+gen double __se_hi  = hitax   * __se_net
+gen double tu_cpsp_fica_se = __se_ss + __se_hi
+label var tu_cpsp_fica_se "Self-employment tax (OASDI+HI) - tax unit"
+drop __se_net __se_ss __se_hi
+
+* ----------------------------------------------------------
+**# Calculating AGI
+* ----------------------------------------------------------
+**## Income inputs
+* -----------------------------------------------------
+
+	  
+**# Calculate payroll taxes (FICA)
+* 1) Employee contribution for wage/salary income FICA
+	cap drop cpsp_fica_wsal
+	gen cpsp_fica_wsal = .
+		replace cpsp_fica_wsal = round((min(pwages, fica[1,1]) * ///
+		(fica[1,2] + fica[1,3])) + (pwages*fica[1,4]))
+		recode cpsp_fica_wsal (.=0)
+	la var cpsp_fica_wsal "FICA tax on wages/salary income [CPSP]"
+
+* 2) Additional FICA medicare tax for high-earners
+	cap drop cpsp_fica_hwsal
+	gen cpsp_fica_hwsal = .
+	replace cpsp_fica_hwsal = round((pwages-fica[1,6])*fica[1,5]) if pwages>fica[1,6]
+	recode cpsp_fica_hwsal (.=0) 
+	la var cpsp_fica_hwsal "Additional Medicare tax for high earners (only on wages) [CPSP]"
+
+* 3) Employee and employer contribution for self-employment income FICA
+	** Create our new fica var
+		cap drop cpsp_fica_se
+		gen cpsp_fica_se = . 
+	** Line 3. Net profit (or loss) of self-employment 	
+		cap drop se_l3
+		gen se_l3 = psemp
+	** line 4. If line 3 is more than zero, multiply line 3 by 92.35%	
+		cap drop se_l4
+		gen se_l4 = round(se_l3 * fica[1,9], .01) if se_l3>0 & se_l3!=.
+		replace se_l4 = se_l3 if se_l3 <= 0
+		replace cpsp_fica_se = 0 if psemp <= fica[1,8]
+	** line 6. total of church employee income and line 4
+		cap drop se_l6
+		gen se_l6 = se_l4 if se_l4!=. & psemp>fica[1,8]
+	** line 7. Maximum amount of combined wages and self-employment ///
+		earnings subject to social security tax or the 6.2% portion ///
+		of the 7.65% railroad retirement (tier 1) 
+		cap drop se_l7
+		gen se_l7 = fica[1,1] if se_l4!=. & psemp>fica[1,8]
+	** line 8d. total social security wages and tips (if 160,200 ///
+		or more, skip to line 11)
+		cap drop se_l8d
+		gen se_l8d = pwages if pwages<fica[1,1]  & se_l4!=. & psemp>fica[1,8]
+	** line 9. subtract line 8d from line 7. if zero or less, enter 0 and ///
+		on line 10 and go to line 11
+		cap drop se_l9
+		gen se_l9 = se_l7 - se_l8d
+		replace se_l9 = 0 if (se_l7 - se_l8d)<=0
+	** line 10. multiply the smaller of line 6 or line 9 by 12.4%
+		cap drop se_l10
+		gen se_l10 = 0 if se_l9==0
+		replace se_l10 = fica[1,12]*(min(se_l6, se_l9)) ///
+			if se_l9>0 & se_l9!=.
+		replace se_l10 = 0 if se_l10==. & se_l4!=. & psemp>fica[1,8]
+	** line 11. multiply line 6 by 2.9%
+		cap drop se_l11
+		gen se_l11 = se_l6 * fica[1,11] if se_l6!=.
+	** line 12. Self-employment tax (add lines 10 and 11)
+		replace cpsp_fica_se = round(se_l10 + se_l11) if cpsp_fica_se!=0
+		recode cpsp_fica_se (.=0)
+		la var cpsp_fica_se "FICA tax on self-employment income [CPSP]"
+
+
+* 4) Total FICA
+	cap drop cpsp_fica
+	gen cpsp_fica = cpsp_fica_wsal + cpsp_fica_se + cpsp_fica_hwsal
+	la var cpsp_fica "Social security retirement payroll deduction (FICA) [CPSP]"
+
+	
+**## Calculate taxable Social Security benefits
+* -----------------------------------------------------	
+	** line 1: Calculate total ssp security benefits	
+	/*	cap drop gssi
+		gen gssi = social 
+		cap drop tu_gssi
+		bysort tax_id: egen tu_gssi = total(gssi) if mfj_file==1
+		replace tu_gssi = gssi if inrange(filestat, 4, 5)*/
+		
+	** line 2: Calculate 50% of total SS benefits
+		cap drop line2
+		gen line2 = 0.5*tu_gssi if tu_gssi>0
+	** line 3, 4, 5: Get personal income excluding SS benefits, ///
+		ignore lines 4 and 5
+		cap drop line3
+		gen line3 = tu_pwages + tu_psemp + tu_intrec + ///
+					tu_dividends + tu_alimony + tu_rent + ///
+					tu_capital_nosp + tu_retinc + tu_ira + tu_pui + ///
+					tu_disab_tot + tu_surv
+	** line 6. Combine personal income and half of SS benefits
+		cap drop line6
+		gen line6 = line2 + line3
+	** line 7: deductions
+		cap drop line7
+		gen line7 = 0
+	** line 8: is line 7 less than 6, if no then no SS are taxable
+		cap drop tu_gssi_tax
+		gen tu_gssi_tax = .
+		replace tu_gssi_tax = 0 if line7 > line6
+		cap drop line8
+		gen line8 = line6 - line7 if line7 < line6
+	** line 9: amounts depending on filing status
+		cap drop line9
+		gen line9 = ss[1,2] if mfj_file==1 & line8!=.
+		replace line9 = ss[1,1] if inrange(filestat, 4, 5) & line8!=.
+	** line 10: first check if SS benefits are taxable
+		replace tu_gssi_tax = 0 if (line9 > line8) & line9!=. & tu_gssi_tax==.
+		cap drop line10
+		gen line10 = line8 - line9 if line9 < line6 & tu_gssi_tax==.
+	** line 11: enter 12000 if married, 9000 if single, hoh
+		cap drop line11
+		gen line11 = ss[1,4] if line10!=. & mfj_file==1
+		replace line11 = ss[1,3] if line10!=. & inrange(filestat, 4, 5)
+	** line 12: subtract line 11 from line 10
+		cap drop line12
+		gen line12 = line10 - line11 if line11!=.
+		replace line12 = 0 if line12<=0
+	** line 13: enter the smaller of line 10 or line 11
+		cap drop line13
+		gen line13 = min(line10, line11) if line11!=.
+	** line14: multiply line13 by half
+		cap drop line14
+		gen line14 = line13*.5 
+	** line15: enter the smaller of line2 or line 14
+		cap drop line15
+		gen line15 = min(line2, line14) if line10!=.
+	** line16: multiply line12 by .85, enter 0 if line 12 is 0
+		cap drop line16
+		gen line16 = line12*.85 if line10!=.
+		replace line16 = 0 if line12==0
+	** line17: add lines 15 and 16
+		cap drop line17
+		gen line17 = line15 + line16
+	** line 18: multiply line1 by .85
+		cap drop line18
+		gen line18 = tu_gssi * .85 if line10!=.
+	** line19: taxable benefits: the smaller of line 17 or line 18
+		replace tu_gssi_tax = round(min(line17, line18) , 1)
+		recode tu_gssi_tax (.=0)
+		drop line*
+
+	
+**## Calculate AGI with taxable SS and self-employment taxes
+* -----------------------------------------------------
+
+
+* Calculate new AGI
+	cap drop tu_cpsp_agi
+	gen tu_cpsp_agi = round(((tu_pwages + tu_psemp + tu_intrec + ///
+					tu_dividends + tu_alimony + tu_rent + tu_pui + ///
+					tu_capital_nosp + tu_retinc + tu_gssi_tax + tu_ira + ///
+					tu_disab_tot + tu_surv) - (tu_cpsp_fica_se/2)), 1)
+	recode tu_cpsp_agi (.=0)
+	cap drop cpsp_agi
+	//gen cpsp_agi=cond(agi!=0, tu_cpsp_agi, 0 )
+	capture confirm variable agi
+	if _rc != 0 gen double agi = tu_cpsp_agi
+	cap drop cpsp_agi
+	gen double cpsp_agi = cond(agi!=0, tu_cpsp_agi, 0)
+
+	//cap drop agi_diff	// difference between cpsp and census AGI
+	//gen agi_diff = tu_cpsp_agi - tu_agi
+	
+* person-level AGI proxy if it doesn't exist (so cond(agi!=0,...) works)
+	
+/* 
+* View cases that aren't matching	
+	sort ph_seq tax_id a_lineno
+	br ph_seq tax_id a_lineno taxid_pid tu_mfj tu_shoh a_age ///
+	filestat dep_stat *agi agi_diff *gssi* *pwages *psemp ///
+	*intrec *dividends *pui *alimony rent tu_rent *pui ///
+	*capital_nosp *retinc *ira if tu_cpsp_agi!=tu_agi & agi_diff>1
+*/
+	
+	
+* ---------------------------------------------------------------------	
+**# Calculating taxable income
+* ---------------------------------------------------------------------	
+**## Standard deduction and exemptions
+* ----------------------------------------------------------
+	cap drop census_stdeduc
+	//gen census_stdeduc = agi - tax_inc 	// Census taxable income
+	*br census_stdeduc agi tax_inc pediseye filestat a_age if pediseye==1
+
+
+
+**### Pub 501, Table 6. Standard Deduction Chart for Most People
+* Calculate standard deductions
+	cap drop cpsp_stdeduc
+	gen cpsp_stdeduc = .
+	foreach stat in single mfj hoh {
+	replace cpsp_stdeduc = `stat'[1, 1] if `stat'_file==1
+	}
+	 
+**### Pub 501, Table 7. Standard Deduction Chart for People Age 65 or older, or Who are Blind
+* Figure out how many conditions apply
+	cap drop p501_t7_box*
+	gen p501_t7_box_i = .
+	** Age 65 or older OR blind
+	*replace p501_t7_box = 1 if taxid_pid==1 & (a_age>=65 | pediseye==1)
+	replace p501_t7_box_i = 1 if page>=65
+	replace p501_t7_box_i = 0 if page<65
+
+	** Age 65 or older AND blind
+	*replace p501_t7_box = 2 if taxid_pid==1 & (a_age>=65 & pediseye==1)
+	
+	** Spouse is age 65 or older OR blind
+	*replace p501_t7_box = 1 if taxid_pid==2 & (a_age>=65 | pediseye==1)
+	gen p501_t7_box_s = . 
+	replace p501_t7_box_s = 1 if sage>=65
+	replace p501_t7_box_s = 0 if sage<65
+
+	** Spouse is age 65 or older AND blind
+	*replace p501_t7_box = 2 if taxid_pid==2 & (a_age>=65 & pediseye==1)
+	
+	*replace p501_t7_box = 0 if taxid_pid!=. & p501_t7_box==.
+	
+	** Sum them at spouse level
+		cap drop tu_p501_t7_box
+		egen tu_p501_t7_box = rowtotal(p501_t7_box_i p501_t7_box_s) 
+		 
+* Adjust standard deductions
+	foreach stat in single mfj hoh {
+	foreach num of numlist 0 1 {
+	replace cpsp_stdeduc = `stat'[1, `num'+2] if `stat'_file==1 & ///
+		tu_p501_t7_box==(1+`num')	
+		}
+	}
+/*
+**### Form 1040 Instructions, p 34, Dependent Standard Deduction Worksheet
+* Dependent Standard Deduction Worksheet, box for number of conditions 
+	cap drop f1040i_p34_box
+	gen f1040i_p34_box = .
+	** Age 65 or older OR blind
+		*replace f1040i_p34_box = 1 if sdep_file==1 & ///
+				(a_age>=65 | pediseye==1)
+		replace f1040i_p34_box = 1 if sdep_file==1 & page>=65
+		replace f1040i_p34_box = 0 if sdep_file==1 & page<65
+	** Age 65 or older AND blind
+		*replace f1040i_p34_box = 2 if sdep_file==1 & ///
+				(a_age>=65 & pediseye==1)
+		*replace f1040i_p34_box = 0 if sdep_file==1 & f1040i_p34_box==.
+
+* Dependent Standard Deduction Worksheet, line 4: Standard deductions
+	** a. Equal to line 2 (if not blind and not over 65)
+		*** 2a. if earned income is greater than X 
+			replace cpsp_stdeduc = (wsal_val+semp_val+frse_val-cpsp_fica_se) ///
+				+ sdep[1,2] if sdep_file==1 & ///
+				(wsal_val+semp_val+frse_val-cpsp_fica_se)>sdep[1,1]
+		*** 2b. if earned income is X or less
+			replace cpsp_stdeduc = sdep[1,3] if sdep_filefiles==1 & ///
+				(wsal_val+semp_val+frse_val-cpsp_fica_se)<=sdep[1,1]
+	** b. if blind or 65 or older, multiply X by the number in the box
+		gen f1040i_p34_l4b = sdep[1, 4] * f1040i_p34_box if ///
+		   f1040i_p34_box==1
+	** c. add lines 7a and 7b for standard deduction
+		replace cpsp_stdeduc = cpsp_stdeduc + f1040i_p34_l4b if ///
+				sdep_file==1 & f1040i_p34_box==1
+		//replace cpsp_stdeduc = 0 if tu_cpsp_agi<=0 | census_stdeduc==0
+		replace cpsp_stdeduc = 0 if tu_cpsp_agi<=0
+		*/
+		
+**### Tax unit level AGI and deductions
+ 
+	gen tuf_agi = tu_cpsp_agi - dwages 
+	
+ 
+/*
+**### Personal and dependent exemptions (0 after TCJA)
+* Calculate exemptions	
+	cap drop cpsp_exemptions
+	gen cpsp_exemptions = .
+		replace cpsp_exemptions = 0 if sdep_file==1
+		* single and hoh 
+		foreach stat in single hoh {
+		replace cpsp_exemptions = ex_`stat'[1, 2] if `stat'_file==1
+		replace cpsp_exemptions = cpsp_exemptions + (ex_`stat'[1, 2]*tu_depx) if `stat'_file==1
+		}
+		*mfj (bc the dependent deduction needs to be divided by 2)
+		foreach stat in  mfj  {
+		replace cpsp_exemptions = ex_`stat'[1, 2] if `stat'_file==1
+		replace cpsp_exemptions = cpsp_exemptions + (ex_`stat'[1, 2]/2*tu_depx) if `stat'_file==1
+		}
+* Worksheet 3. Exemption phaseout (will need our own agi for this)
+	** Get AGIs of only the non-dependents
+		cap drop tu_cpsp_agi_nodep
+		bysort tax_id: egen tu_cpsp_agi_nodep = total(cpsp_agi) if dep_stat==0
+	** Create vars for each line of worksheet
+		forval x = 4/8 {
+		cap drop p501_wksht3_l`x'
+		gen p501_wksht3_l`x' = .	
+		}
+	foreach stat in single mfj hoh {
+	** Line 4, phaseout threshold
+		replace p501_wksht3_l4 = ex_`stat'[1, 3] if `stat'_file==1
+	** Line 5, Subtract line 4 from tu_cpsp_agi_nodep. If > $122,500, you can't take a deduction for exemptions
+		replace p501_wksht3_l5 = tu_cpsp_agi_nodep - p501_wksht3_l4 if ///
+			tu_cpsp_agi_nodep>p501_wksht3_l4 & `stat'_file==1
+		replace cpsp_exemptions = 0 if p501_wksht3_l5 > ex_`stat'[1, 6] & `stat'_file==1 & p501_wksht3_l5!=.
+	** Line 6, divide line 5 by 2500 (round to next higher number) 
+		replace p501_wksht3_l6 = ceil(p501_wksht3_l5/ex_`stat'[1, 5]) if ///
+			p501_wksht3_l5 <= `stat'[1, 11] & `stat'_file==1
+	** Line 7. multiply line 6 by 0.03 and round to at least 3 places
+		replace p501_wksht3_l7 = round(p501_wksht3_l6 * ex_`stat'[1, 4], 0.001) if p501_wksht3_l6!=. & `stat'_file==1
+	** Line 8. Multiply exemptions by line 7
+		replace p501_wksht3_l8 = round(cpsp_exemptions * ///
+			p501_wksht3_l7, 1) if p501_wksht3_l6!=. & `stat'_file==1
+	** Line 9. Deduct from exemptions
+		replace cpsp_exemptions = cpsp_exemptions - p501_wksht3_l8 if p501_wksht3_l8!=. & `stat'_file==1
+	}
+
+	drop *p501*
+*/	
+	
+
+**## Form 8995: Qualified Business Income (QBI) Deduction Simplified Computation
+* ----------------------------------------------------------
+* Line 11. Taxable income before QBI deduction
+	cap drop f8995_l11
+	gen f8995_l11 = tuf_agi - cpsp_stdeduc
+	recode f8995_l11 (min/0=0)
+	
+if (f8995_l11<=taxamt14 & mfj_file==0) | (f8995_l11<=taxamt24 & mfj_file==1) {
+* Line 5. Qualified business income component. Multiply total QBI by 20% 
+	cap drop f8995_l5
+	gen f8995_l5 = (tu_psemp - (tu_cpsp_fica_se/2))*fed157
+		// self-employment income - fica deduction * 20%
+	recode f8995_l5 (min/0=0)
+	
+* Lines 6 - 9. 20 percent of qualified real estate investment trust (REIT) ///
+  dividends and qualified publicly traded partnership (PTP) income	
+  // N/A in data; skip
+  
+* Line 12. Enter your net capital gain, if any, increased by any qualified dividends
+	cap drop f8995_l12
+	gen f8995_l12 = tu_capital
+	recode f8995_l12 (min/0=0)
+	replace f8995_l12 = f8995_l12 + tu_dividends
+	// must make negative capital income 0 and then add dividends
+	
+* Line 13. Subtract line 12 from line 11. If zero or less, enter -0
+	cap drop f8995_l13
+	gen f8995_l13 = f8995_l11 - f8995_l12
+	recode f8995_l13 (min/0=0)
+
+* Line 14. Income limitation. Multiply line 13 by 20% (0.20) 
+	cap drop f8995_l14
+	gen f8995_l14 = f8995_l13 * fed157
+	
+* Line 15. Qualified business income deduction. Enter the smaller of ///
+  line 10 (in our case, line 5) or line 14
+  	cap drop f8995_l15
+	gen f8995_l15 = min(f8995_l5, f8995_l14)
+	
+	cap drop tu_cpsp_qbi_deduc
+	gen tu_cpsp_qbi_deduc = f8995_l15
+}
+
+/*
+* QBI deduction phaseouts
+	cap drop tu_qbi_deduc_po_cpsp
+	gen tu_qbi_deduc_po_cpsp = .
+	foreach stat in shoh mfj {
+	** calc. phased out qbi deduction amount (20% of QBI - total phased-in reduction)
+	replace tu_qbi_deduc_po_cpsp = (tu_cpsp_qbi*fed157) - ///
+		((tu_cpsp_qbi*fed157) * ((f8995_l11 - qbi_`stat'[1, 2]) / qbi_`stat'[1, 4])) ///
+		if inrange(f8995_l11, 1+qbi_`stat'[1, 2], qbi_`stat'[1, 3]) & `stat'_file==1
+	** calc. qbi deduc for those b/w po rate (min. of po and 20% of taxable inc)
+	replace tu_cpsp_qbi_deduc = min((tu_qbi_deduc_po_cpsp), (f8995_l11)*fed157) if ///
+		inrange(f8995_l11, 1+qbi_`stat'[1, 2], qbi_`stat'[1, 3]) & `stat'_file==1
+	** make deduction 0 for those above tax inc threshold
+	replace tu_cpsp_qbi_deduc = 0 if f8995_l11>qbi_`stat'[1, 3] & `stat'_file==0
+	}
+*/
+
+* Final QBI deduction
+capture confirm variable tu_cpsp_qbi_deduc
+if _rc != 0 gen tu_cpsp_qbi_deduc = 0
+
+replace tu_cpsp_qbi_deduc = round(tu_cpsp_qbi_deduc, 1)
+replace tu_cpsp_qbi_deduc = 0 if year<2018
+
+cap drop cpsp_qbi_deduc
+gen cpsp_qbi_deduc = cond(tu_psemp>0, tu_cpsp_qbi_deduc, 0)
+* Final QBI deduction
+	replace tu_cpsp_qbi_deduc = round(tu_cpsp_qbi_deduc, 1)
+	replace tu_cpsp_qbi_deduc = 0 if year<2018 // remove QBI in pre-TCJA tax code
+	
+	cap drop cpsp_qbi_deduc
+	gen cpsp_qbi_deduc=cond(tu_psemp>0, tu_cpsp_qbi_deduc, 0 )
+	
+	
+	
+**## Taxable income
+* ----------------------------------------------------------
+	/*
+	if $agi_mod == 0 {
+	cap drop cpsp_tax_inc 
+	gen cpsp_tax_inc = agi - cpsp_stdeduc - cpsp_qbi_deduc
+	replace cpsp_tax_inc = 0 if cpsp_tax_inc<0
+	}
+	*/
+ 	cap drop cpsp_tax_inc 
+	gen cpsp_tax_inc = cpsp_agi - cpsp_stdeduc - cpsp_qbi_deduc
+	replace cpsp_tax_inc = 0 if cpsp_tax_inc<0
+	   
+display "===== RUN FINISHED at " c(current_time) " ====="
+display "Rows in memory: " _N
+describe
+capture log close
+
+
+* === Export results ===
+export delimited using "C:\Users\jeg2247\Desktop\Tax Simulator\out.csv", replace nolabel
