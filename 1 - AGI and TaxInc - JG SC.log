@@ -32,10 +32,10 @@ Notes:
       name:  <unnamed>
        log:  C:\Users\jeg2247\Desktop\Tax Simulator\stata_run.log
   log type:  text
- opened on:  13 Nov 2025, 16:48:39
+ opened on:  13 Nov 2025, 17:25:03
 
 . display "===== RUN STARTED at " c(current_time) " ====="
-===== RUN STARTED at 16:48:39 =====
+===== RUN STARTED at 17:25:03 =====
 
 . 
 . * === Import your input CSV ===
@@ -60,7 +60,7 @@ C:\Users\jeg2247\Desktop\Tax Simulator
 
 . replace filestat = 2 if inlist(lower(trim(filing_status)),"mfj","married fili
 > ng jointly")
-(1 real change made)
+(0 real changes made)
 
 . replace filestat = 4 if inlist(lower(trim(filing_status)),"hoh","head of hous
 > ehold")
@@ -87,12 +87,7 @@ C:\Users\jeg2247\Desktop\Tax Simulator
 . 
 . * Quick sanity check (you can comment this out later)
 . tab filestat
-
-   filestat |      Freq.     Percent        Cum.
-------------+-----------------------------------
-        MFJ |          1      100.00      100.00
-------------+-----------------------------------
-      Total |          1      100.00
+no observations
 
 . 
 . 
@@ -133,7 +128,7 @@ C:\Users\jeg2247\Desktop\Tax Simulator
 . 
 . * Dependent filer 
 . replace filestat = 6 if filing_status=="dep_filer"
-(0 real changes made)
+(1 real change made)
 
 . 
 . 
@@ -566,7 +561,7 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
   2.         replace cpsp_stdeduc = `stat'[1, 1] if `stat'_file==1
   3.         }
 (0 real changes made)
-(1 real change made)
+(0 real changes made)
 (0 real changes made)
 
 .          
@@ -738,6 +733,7 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 .         cap drop f8995_l11
 
 .         gen f8995_l11 = tuf_agi - cpsp_stdeduc
+(1 missing value generated)
 
 .         recode f8995_l11 (min/0=0)
 (0 changes made to f8995_l11)
@@ -750,7 +746,6 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 .         gen f8995_l5 = (tu_psemp - (tu_cpsp_fica_se/2))*fed157
 .                 // self-employment income - fica deduction * 20%
 .         recode f8995_l5 (min/0=0)
-(0 changes made to f8995_l5)
 .         
 . * Lines 6 - 9. 20 percent of qualified real estate investment trust (REIT) //
 > /
@@ -762,16 +757,13 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 .         cap drop f8995_l12
 .         gen f8995_l12 = tu_capital
 .         recode f8995_l12 (min/0=0)
-(0 changes made to f8995_l12)
 .         replace f8995_l12 = f8995_l12 + tu_dividends
-(0 real changes made)
 .         // must make negative capital income 0 and then add dividends
 .         
 . * Line 13. Subtract line 12 from line 11. If zero or less, enter -0
 .         cap drop f8995_l13
 .         gen f8995_l13 = f8995_l11 - f8995_l12
 .         recode f8995_l13 (min/0=0)
-(0 changes made to f8995_l13)
 . 
 . * Line 14. Income limitation. Multiply line 13 by 20% (0.20) 
 .         cap drop f8995_l14
@@ -856,13 +848,14 @@ file C:\Users\jeg2247\Desktop\Tax Simulator\federal_parameters.dta saved
 .         cap drop cpsp_tax_inc 
 
 .         gen cpsp_tax_inc = cpsp_agi - cpsp_stdeduc - cpsp_qbi_deduc
+(1 missing value generated)
 
 .         replace cpsp_tax_inc = 0 if cpsp_tax_inc<0
 (0 real changes made)
 
 .            
 . display "===== RUN FINISHED at " c(current_time) " ====="
-===== RUN FINISHED at 16:48:40 =====
+===== RUN FINISHED at 17:25:04 =====
 
 . display "Rows in memory: " _N
 Rows in memory: 1
@@ -871,27 +864,27 @@ Rows in memory: 1
 
 Contains data
  Observations:             1                  
-    Variables:            64                  
+    Variables:            59                  
 -------------------------------------------------------------------------------
 Variable      Storage   Display    Value
     name         type    format    label      Variable label
 -------------------------------------------------------------------------------
 tax_year        int     %8.0g                 
-filing_status   str22   %22s                  
+filing_status   str9    %9s                   
 year            int     %8.0g                 
 page            byte    %8.0g                 
 sage            byte    %8.0g                 
-pwages          long    %12.0g                
-swages          long    %12.0g                
+pwages          byte    %8.0g                 
+swages          byte    %8.0g                 
 dwages          int     %8.0g                 
-tu_pwages       long    %12.0g                
+tu_pwages       int     %8.0g                 
 psemp           byte    %8.0g                 
 ssemp           byte    %8.0g                 
 tu_psemp        byte    %8.0g                 
 tu_intrec       byte    %8.0g                 
 tu_dividends    byte    %8.0g                 
 tu_alimony      byte    %8.0g                 
-tu_rent         int     %8.0g                 
+tu_rent         byte    %8.0g                 
 tu_pui          byte    %8.0g                 
 tu_capital_nosp byte    %8.0g                 
 tu_retinc       byte    %8.0g                 
@@ -937,11 +930,6 @@ p501_t7_box_s   float   %9.0g
 tu_p501_t7_box  float   %9.0g                 
 tuf_agi         float   %9.0g                 
 f8995_l11       float   %9.0g                 
-f8995_l5        float   %9.0g                 
-f8995_l12       float   %9.0g                 
-f8995_l13       float   %9.0g                 
-f8995_l14       float   %9.0g                 
-f8995_l15       float   %9.0g                 
 tu_cpsp_qbi_d~c float   %9.0g                 
 cpsp_qbi_deduc  float   %9.0g                 
 cpsp_tax_inc    float   %9.0g                 
